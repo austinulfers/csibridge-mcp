@@ -1,0 +1,10 @@
+{
+  "servers": {
+    "csibridge-mock": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "csibridge-mcp", "--mock"],
+      "cwd": "${workspaceFolder}"
+    }
+  }
+}

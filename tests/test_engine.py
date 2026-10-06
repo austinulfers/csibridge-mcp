@@ -59,6 +59,22 @@ def test_launch_can_be_forbidden(backend):
         engine.stop()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="needs the real COM backend")
+def test_real_backend_on_windows_without_csibridge_reports_it_cleanly():
+    """On a Windows machine without CSiBridge (such as CI), the COM path must get as
+    far as asking Windows for the CSI helper object and report its absence, not crash."""
+    engine = Engine(ComBackend())
+    engine.start()
+    try:
+        status = engine.request("status")
+        assert status["connected"] is False
+        assert "CSiAPIv1.Helper" in status["connect_error"]
+        assert "Is CSiBridge installed" in status["connect_error"]
+        assert status["api_index"]["ready"] is False
+    finally:
+        engine.stop()
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="checks the message shown off Windows")
 def test_real_backend_off_windows_says_what_to_do():
     engine = Engine(ComBackend())

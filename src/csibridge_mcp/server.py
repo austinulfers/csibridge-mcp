@@ -1,4 +1,4 @@
-"""The MCP server: the tools Claude Code uses to drive CSiBridge."""
+"""The MCP server: the tools an MCP client uses to drive CSiBridge."""
 from __future__ import annotations
 
 import json
@@ -7,6 +7,7 @@ from typing import Any, Literal
 import anyio
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
 from .engine import DEFAULT_WAIT, UNITS, Engine
@@ -70,8 +71,26 @@ def _cell(value: Any) -> str:
     return str(value)
 
 
-def create_server(engine: Engine) -> FastMCP:
-    mcp = FastMCP("csibridge", instructions=INSTRUCTIONS, log_level="WARNING")
+MCP_PATH = "/mcp"
+
+
+def create_server(engine: Engine, http: bool = False) -> FastMCP:
+    """Build the MCP server; ``http`` tunes it for the streamable HTTP transport."""
+    transport = {}
+    if http:
+        transport = {
+            # Nothing here depends on MCP session state (the engine is shared),
+            # and stateless JSON responses work with the widest range of
+            # remote clients, tunnels and proxies.
+            "stateless_http": True,
+            "json_response": True,
+            "streamable_http_path": MCP_PATH,
+            # The SDK's Host-header check guards unauthenticated local servers
+            # against DNS rebinding. Here every request is token-checked, and
+            # behind a tunnel or proxy the Host header is not predictable.
+            "transport_security": TransportSecuritySettings(enable_dns_rebinding_protection=False),
+        }
+    mcp = FastMCP("csibridge", instructions=INSTRUCTIONS, log_level="WARNING", **transport)
 
     async def request(op: str, params: dict | None = None, wait: float = DEFAULT_WAIT) -> dict:
         try:

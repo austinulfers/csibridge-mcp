@@ -265,6 +265,8 @@ source = { editable = "." }
 dependencies = [
     { name = "comtypes", marker = "sys_platform == 'win32'" },
     { name = "mcp" },
+    { name = "starlette" },
+    { name = "uvicorn" },
 ]
 
 [package.dev-dependencies]
@@ -277,6 +279,8 @@ dev = [
 requires-dist = [
     { name = "comtypes", marker = "sys_platform == 'win32'", specifier = ">=1.4" },
     { name = "mcp", specifier = ">=1.12,<2" },
+    { name = "starlette", specifier = ">=0.40" },
+    { name = "uvicorn", specifier = ">=0.30" },
 ]
 
 [package.metadata.requires-dev]

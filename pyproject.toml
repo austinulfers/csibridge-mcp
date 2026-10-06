@@ -1,16 +1,22 @@
 [project]
 name = "csibridge-mcp"
 version = "0.1.0"
-description = "MCP server that lets Claude Code drive a running CSiBridge through its API"
+description = "MCP server that lets an AI assistant drive a running CSiBridge through its API"
 readme = "README.md"
 license = "FSL-1.1-MIT"
 license-files = ["LICENSE.md"]
 requires-python = ">=3.10"
 dependencies = [
     "mcp>=1.12,<2",
+    # Used directly by the HTTP transport (both also come with mcp).
+    "starlette>=0.40",
+    "uvicorn>=0.30",
     # CSiBridge's API is COM, so the real backend only exists on Windows.
     "comtypes>=1.4; sys_platform == 'win32'",
 ]
+
+[project.urls]
+Repository = "https://github.com/austinulfers/csibridge-mcp"
 
 [project.scripts]
 csibridge-mcp = "csibridge_mcp.cli:main"

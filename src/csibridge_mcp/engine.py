@@ -132,8 +132,8 @@ class ComBackend:
             raise CsiError(
                 "not_running",
                 f"Could not attach to a running CSiBridge ({describe_exception(exc)}). Start CSiBridge "
-                "first; if it is running, make sure it and Claude Code run as the same Windows user "
-                "and at the same elevation (both normal, or both 'as administrator').",
+                "first; if it is running, make sure CSiBridge and your MCP client run as the same "
+                "Windows user and at the same elevation (both normal, or both 'as administrator').",
             ) from exc
         if not obj:
             raise CsiError(

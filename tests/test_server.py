@@ -240,7 +240,7 @@ async def test_long_analysis_returns_pending_then_job_wait_finishes_it(client, b
 
 
 async def test_server_speaks_mcp_over_stdio():
-    """Launch the server the way Claude Code does and talk to it over stdio."""
+    """Launch the server the way an MCP client does and talk to it over stdio."""
     params = StdioServerParameters(command=sys.executable, args=["-m", "csibridge_mcp", "--mock"])
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
