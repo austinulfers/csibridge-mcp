@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "csibridge-mock": {
+      "command": "uv",
+      "args": ["run", "csibridge-mcp", "--mock"]
+    }
+  }
+}

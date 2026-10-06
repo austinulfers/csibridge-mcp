@@ -1,0 +1,34 @@
+[project]
+name = "csibridge-mcp"
+version = "0.1.0"
+description = "MCP server that lets Claude Code drive a running CSiBridge through its API"
+readme = "README.md"
+license = "FSL-1.1-MIT"
+license-files = ["LICENSE.md"]
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.12,<2",
+    # CSiBridge's API is COM, so the real backend only exists on Windows.
+    "comtypes>=1.4; sys_platform == 'win32'",
+]
+
+[project.scripts]
+csibridge-mcp = "csibridge_mcp.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    # A pure-Python wheel, so it installs anywhere: the tests read its source to
+    # check our assumptions about it even where the package cannot be imported.
+    "comtypes>=1.4",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/csibridge_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
