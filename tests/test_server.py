@@ -116,6 +116,24 @@ async def test_build_analyse_and_read_results(client):
     assert [row[0] for row in table["rows"]] == ["1", "2", "3"]
 
 
+async def test_result_tables_explain_that_no_load_cases_are_selected(client):
+    await build_two_span_girder(client)
+    await tool(client, "run_analysis")
+    # As in a new Bridge Modeler model: CSiBridge then fails the read without saying why.
+    await tool(client, "call", method="SapModel.DatabaseTables.SetLoadCasesSelectedForDisplay", args=[[]])
+
+    with pytest.raises(ToolFailure, match="no load cases or combinations are selected") as failure:
+        await tool(client, "get_table", table_key="Joint Displacements")
+    assert "load_cases=[...]" in str(failure.value) and "SapModel.LoadCases.GetNameList" in str(failure.value)
+    # A caller that chose the selection gets the general message.
+    with pytest.raises(ToolFailure, match="Check the key with list_tables"):
+        await tool(client, "get_table", table_key="Joint Displacements", load_combos=[])
+
+    cases = (await tool(client, "call", method="SapModel.LoadCases.GetNameList"))["outputs"]["MyName"]
+    table = await tool(client, "get_table", table_key="Joint Displacements", load_cases=cases)
+    assert table["total_rows"] == 3
+
+
 async def test_analysis_failure_carries_a_hint(client):
     await tool(client, "new_model")
     result = await tool(client, "run_analysis")

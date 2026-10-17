@@ -261,6 +261,10 @@ class _Model:
         self.frames: dict[str, tuple[str, str, str]] = {}  # name -> (point i, point j, section)
         self.load_patterns: dict[str, tuple[int, float]] = {"DEAD": (1, 1.0)}
         self.output_cases: set[str] = set()
+        # What result tables report. CSiBridge's starting selection varies (a new Bridge Modeler
+        # model has none); the mock starts with its one case so plain result reads work.
+        self.display_cases: list[str] = ["DEAD"]
+        self.display_combos: list[str] = []
         self.pending_edits: dict[str, tuple[list[str], list[list[str]]]] = {}
 
     @staticmethod
@@ -488,6 +492,12 @@ class cLoadPatterns(MockInterface):
         return len(self._m.load_patterns), list(self._m.load_patterns), 0
 
 
+class cLoadCases(MockInterface):
+    @api("NumberNames: ref int, MyName: ref string[], CaseType: int = 0")
+    def GetNameList(self, NumberNames, MyName, CaseType):
+        return len(self._m.load_patterns), list(self._m.load_patterns), 0  # one case per pattern
+
+
 class cAnalyze(MockInterface):
     @api()
     def RunAnalysis(self):
@@ -561,11 +571,18 @@ class cDatabaseTables(MockInterface):
         fields = table[0]
         return 1, len(fields), fields, fields, fields, [""] * len(fields), [table[2] != 0] * len(fields), 0
 
-    def _read(self, table_key: str, wanted: tuple = ()):
+    def _read(self, table_key: str, wanted: tuple = (), for_display: bool = False):
         table = self._m.tables().get(table_key)
         if table is None:
             return None
         fields, rows, _ = table
+        if for_display and "OutputCase" in fields:
+            # Result tables report only the cases and combinations selected for display, and the
+            # read fails, without saying why, when none are.
+            shown = {*self._m.display_cases, *self._m.display_combos}
+            if not shown:
+                return None
+            rows = [row for row in rows if row[fields.index("OutputCase")] in shown]
         keep = [i for i, name in enumerate(fields) if not wanted or name in wanted]
         return [fields[i] for i in keep], len(rows), [row[i] for row in rows for i in keep]
 
@@ -574,7 +591,7 @@ class cDatabaseTables(MockInterface):
         "FieldsKeysIncluded: ref string[], NumberRecords: ref int, TableData: ref string[]"
     )
     def GetTableForDisplayArray(self, TableKey, FieldKeyList, GroupName, TableVersion, FieldsKeysIncluded, NumberRecords, TableData):
-        data = self._read(TableKey, tuple(f for f in FieldKeyList if f))
+        data = self._read(TableKey, tuple(f for f in FieldKeyList if f), for_display=True)
         if data is None:
             return FieldKeyList, 0, (), 0, (), 1
         return FieldKeyList, 1, *data, 0
@@ -632,12 +649,22 @@ class cDatabaseTables(MockInterface):
         self._m.pending_edits.clear()
         return 0
 
+    @api("NumberSelectedLoadCases: ref int, LoadCaseList: ref string[]")
+    def GetLoadCasesSelectedForDisplay(self, NumberSelectedLoadCases, LoadCaseList):
+        return len(self._m.display_cases), self._m.display_cases, 0
+
     @api("LoadCaseList: ref string[]")
     def SetLoadCasesSelectedForDisplay(self, LoadCaseList):
+        self._m.display_cases = list(LoadCaseList)
         return LoadCaseList, 0
+
+    @api("NumberSelectedLoadCombinations: ref int, LoadCombinationList: ref string[]")
+    def GetLoadCombinationsSelectedForDisplay(self, NumberSelectedLoadCombinations, LoadCombinationList):
+        return len(self._m.display_combos), self._m.display_combos, 0
 
     @api("LoadCombinationList: ref string[]")
     def SetLoadCombinationsSelectedForDisplay(self, LoadCombinationList):
+        self._m.display_combos = list(LoadCombinationList)
         return LoadCombinationList, 0
 
     @api("LoadPatternList: ref string[]")
@@ -659,6 +686,7 @@ class cSapModel(MockInterface):
         "PointObj": cPointObj,
         "FrameObj": cFrameObj,
         "LoadPatterns": cLoadPatterns,
+        "LoadCases": cLoadCases,
         "Analyze": cAnalyze,
         "Results": cAnalysisResults,
         "DatabaseTables": cDatabaseTables,
