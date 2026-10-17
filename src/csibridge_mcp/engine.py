@@ -4,6 +4,7 @@ from __future__ import annotations
 import enum
 import importlib
 import json
+import os
 import platform
 import queue
 import secrets
@@ -58,8 +59,11 @@ class ComBackend:
     """Talks to CSiBridge through its COM API using comtypes (Windows only)."""
 
     kind = "com"
+    PROCESS_NAME = "csibridge.exe"
     # RPC/COM failures that mean the CSiBridge process went away.
     _DEAD_HRESULTS = frozenset({0x800706BA, 0x800706BE, 0x800706BF, 0x80010108, 0x80010007, 0x80010012})
+    # COM only works locally, so CSiBridge sees the same files this process does.
+    file_exists = staticmethod(os.path.isfile)
 
     def __init__(self, progid: str = DEFAULT_PROGID, helper_progid: str = DEFAULT_HELPER_PROGID):
         self.progid = progid
@@ -168,8 +172,12 @@ class ComBackend:
             # comtypes generates each type-library enum as an IntFlag class.
             if isinstance(obj, type) and issubclass(obj, enum.Enum) and obj.__module__ != "enum":
                 # __members__ rather than iteration: iterating a Flag skips
-                # multi-bit values such as kip_in_F = 3.
-                found[name] = {key: int(member.value) for key, member in obj.__members__.items()}
+                # multi-bit values such as kip_in_F = 3. The type library
+                # prefixes each member with its enum's name (eUnits_kip_in_F);
+                # CSI's documentation writes eUnits.kip_in_F, so drop it.
+                found[name] = {
+                    key.removeprefix(f"{name}_"): int(member.value) for key, member in obj.__members__.items()
+                }
         return found
 
     def is_disconnect(self, exc: BaseException) -> bool:
@@ -177,6 +185,84 @@ class ComBackend:
         if not isinstance(code, int):
             code = getattr(exc, "winerror", None)
         return isinstance(code, int) and (code & 0xFFFFFFFF) in self._DEAD_HRESULTS
+
+    def dialogs(self) -> list[str]:
+        """Dialog boxes CSiBridge is waiting on.
+
+        A few failures, such as opening a file that does not exist, make
+        CSiBridge show a message box even when driven through the API, and the
+        call does not return until someone closes it on screen.
+        """
+        if sys.platform != "win32":
+            return []
+        try:
+            return _modal_windows(self.PROCESS_NAME)
+        except Exception:  # best effort: never let this break a status report
+            return []
+
+
+def _modal_windows(process_name: str) -> list[str]:
+    """Title and text of each modal window open in processes named ``process_name``."""
+    import ctypes
+    from ctypes import wintypes
+
+    user32, kernel32 = ctypes.WinDLL("user32"), ctypes.WinDLL("kernel32")
+    callback = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user32.EnumWindows.argtypes = [callback, wintypes.LPARAM]
+    user32.EnumChildWindows.argtypes = [wintypes.HWND, callback, wintypes.LPARAM]
+    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.IsWindowVisible.argtypes = user32.IsWindowEnabled.argtypes = [wintypes.HWND]
+    user32.GetWindow.argtypes, user32.GetWindow.restype = [wintypes.HWND, wintypes.UINT], wintypes.HWND
+    kernel32.OpenProcess.argtypes, kernel32.OpenProcess.restype = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    def text(hwnd, getter=user32.GetWindowTextW) -> str:
+        buffer = ctypes.create_unicode_buffer(1024)
+        getter(hwnd, buffer, len(buffer))
+        return buffer.value.strip()
+
+    names: dict[int, str] = {}
+
+    def name_of_process(pid: int) -> str:
+        if pid not in names:
+            names[pid] = ""
+            handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            if handle:
+                buffer = ctypes.create_unicode_buffer(1024)
+                size = wintypes.DWORD(len(buffer))
+                if kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+                    names[pid] = os.path.basename(buffer.value).lower()
+                kernel32.CloseHandle(handle)
+        return names[pid]
+
+    found: list[str] = []
+
+    def visit(hwnd, _):
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if not user32.IsWindowVisible(hwnd) or name_of_process(pid.value) != process_name:
+            return True
+        owner = user32.GetWindow(hwnd, 4)  # GW_OWNER
+        # A message box, or any window that disables its owner while open. This
+        # leaves out the main window and modeless ones like the analysis monitor.
+        if text(hwnd, user32.GetClassNameW) != "#32770" and not (owner and not user32.IsWindowEnabled(owner)):
+            return True
+        lines: list[str] = []
+
+        def visit_child(child, _):
+            if "static" in text(child, user32.GetClassNameW).lower() and (line := text(child)):
+                lines.append(line)
+            return True
+
+        user32.EnumChildWindows(hwnd, callback(visit_child), 0)
+        found.append(": ".join(part for part in (text(hwnd), " ".join(lines)) if part)[:500])
+        return True
+
+    user32.EnumWindows(callback(visit), 0)
+    return found
 
 
 class MockBackend:
@@ -214,6 +300,12 @@ class MockBackend:
 
     def is_disconnect(self, exc: BaseException) -> bool:
         return isinstance(exc, self._mock.MockDisconnected)
+
+    def dialogs(self) -> list[str]:
+        return list(self.application.dialogs)
+
+    def file_exists(self, path: str) -> bool:
+        return True  # the mock has no files; its OpenFile checks names itself
 
 
 # ---------------------------------------------------------------------------
@@ -315,12 +407,15 @@ class Engine:
         job = self._current
         if job is None:
             return None
-        return {
+        busy = {
             "job_id": job.id,
             "label": job.label,
             "running_seconds": round(time.time() - (job.started or job.created), 1),
             "queued_behind": self._queue.qsize(),
         }
+        if dialogs := self.backend.dialogs():
+            busy["dialogs"] = dialogs
+        return busy
 
     # -- job plumbing -----------------------------------------------------
 
@@ -333,13 +428,16 @@ class Engine:
 
     def _await(self, job: _Job, wait: float) -> dict:
         if not job.done.wait(wait):
-            return {
+            pending = {
                 "pending": True,
                 "job_id": job.id,
                 "label": job.label,
                 "state": "running" if job.started else "queued",
                 "elapsed_seconds": round(time.time() - (job.started or job.created), 1),
             }
+            if dialogs := self.backend.dialogs():
+                pending["dialogs"] = dialogs
+            return pending
         if job.error is not None:
             raise job.error
         return job.result
@@ -590,8 +688,9 @@ def selftest(engine: Engine, launch: bool = False) -> int:
     """
     failures = []
 
-    def step(title: str, op: str, params: dict | None = None, check=None) -> None:
+    def step(title: str, op: str, params: dict | None = None, check=None) -> dict | None:
         print(f"\n== {title}")
+        result = None
         try:
             result = engine.request(op, params or {}, wait=600)
             print(json.dumps(result, indent=2)[:4000])
@@ -605,12 +704,13 @@ def selftest(engine: Engine, launch: bool = False) -> int:
             print(f"FAIL: {problem}")
         else:
             print("PASS")
+        return result
 
     print(f"csibridge-mcp self-test (version {__version__}, backend {engine.backend.kind})")
     print(f"Python {platform.python_version()} {platform.architecture()[0]} on {platform.platform()}")
     if launch:
         step("Launch CSiBridge", "connect", {"mode": "launch"})
-    step(
+    status = step(
         "Attach and read model info",
         "status",
         check=lambda r: None if r.get("connected") else r.get("connect_error", "not connected"),
@@ -630,12 +730,17 @@ def selftest(engine: Engine, launch: bool = False) -> int:
         {"method": "SapModel.LoadPatterns.GetNameList"},
         check=lambda r: None if r.get("ok") and "outputs" in r else "outputs were not labelled",
     )
-    step(
-        "List available database tables",
-        "call",
-        {"method": "SapModel.DatabaseTables.GetAvailableTables"},
-        check=lambda r: None if r.get("ok") else r.get("error"),
-    )
+    if status and status.get("connected") and not status.get("csibridge", {}).get("model_file"):
+        # CSiBridge refuses table calls until a model is open or started.
+        print("\n== List available database tables")
+        print("SKIP: no model is open in CSiBridge. Open or start one and run the self-test again to include this check.")
+    else:
+        step(
+            "List available database tables",
+            "call",
+            {"method": "SapModel.DatabaseTables.GetAvailableTables"},
+            check=lambda r: None if r.get("ok") else r.get("error"),
+        )
 
     print("\n" + "=" * 60)
     if failures:

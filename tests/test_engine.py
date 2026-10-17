@@ -1,9 +1,11 @@
+import enum
 import sys
 import time
+import types
 
 import pytest
 
-from csibridge_mcp.engine import ComBackend, Engine
+from csibridge_mcp.engine import DEFAULT_HELPER_PROGID, ComBackend, Engine
 from csibridge_mcp.errors import CsiError
 
 
@@ -59,7 +61,20 @@ def test_launch_can_be_forbidden(backend):
         engine.stop()
 
 
+def _csibridge_installed() -> bool:
+    if sys.platform != "win32":
+        return False
+    import winreg
+
+    try:
+        winreg.CloseKey(winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, DEFAULT_HELPER_PROGID))
+    except OSError:
+        return False
+    return True
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="needs the real COM backend")
+@pytest.mark.skipif(_csibridge_installed(), reason="CSiBridge is installed here")
 def test_real_backend_on_windows_without_csibridge_reports_it_cleanly():
     """On a Windows machine without CSiBridge (such as CI), the COM path must get as
     far as asking Windows for the CSI helper object and report its absence, not crash."""
@@ -73,6 +88,39 @@ def test_real_backend_on_windows_without_csibridge_reports_it_cleanly():
         assert status["api_index"]["ready"] is False
     finally:
         engine.stop()
+
+
+@pytest.mark.skipif(not _csibridge_installed(), reason="needs CSiBridge installed")
+def test_real_backend_reads_a_running_csibridge():
+    """Read-only checks against the real API, on a machine where CSiBridge is open."""
+    engine = Engine(ComBackend())
+    engine.start()
+    try:
+        status = engine.request("status", wait=600)
+        if not status["connected"]:
+            pytest.skip("CSiBridge is not running")
+        assert status["api_index"]["ready"] is True
+        # The type library spells members eUnits_kN_m_C; they are shown as documented.
+        assert engine.request("enums", {"name": "eUnits"})["members"]["kN_m_C"] == 6
+        described = engine.request("describe", {"path": "SapModel.FrameObj.AddByCoord"})
+        assert "Name: ref string" in described["signature"]
+        units = call(engine, "SapModel.GetPresentUnits")
+        assert units["ok"] is True and units["ret"] in range(1, 17)
+        assert engine.backend.dialogs() == []
+    finally:
+        engine.stop()
+
+
+def test_com_enums_are_named_as_documented():
+    """comtypes generates enum members with their enum's name as a prefix."""
+
+    class eMatType(enum.IntFlag):
+        eMatType_Steel = 1
+        eMatType_Concrete = 2
+
+    backend = ComBackend()
+    backend._gen = types.SimpleNamespace(eMatType=eMatType)
+    assert backend.enums() == {"eMatType": {"Steel": 1, "Concrete": 2}}
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="checks the message shown off Windows")
@@ -206,6 +254,20 @@ def test_slow_calls_become_pending_jobs(engine, backend):
     finished = engine.request("job", {"job_id": pending["job_id"]}, wait=5)
     assert finished["ok"] is True and finished["ret"] == 0
     assert engine.request("job", {"job_id": queued["job_id"]}, wait=5)["ret"] is True
+
+
+def test_a_dialog_holding_up_a_call_is_reported(engine, backend):
+    backend.application.analysis_seconds = 0.4
+    call(engine, "SapModel.FrameObj.AddByCoord", 0, 0, 0, 10, 0, 0)
+    call(engine, "SapModel.File.Save", r"C:\models\slow.bdb")
+    backend.application.dialogs = ["CSiBridge: Can not Open File C:\\models\\gone.bdb"]
+
+    pending = engine.request("call", {"method": "SapModel.Analyze.RunAnalysis"}, wait=0.05)
+    assert pending["dialogs"] == backend.application.dialogs
+    assert engine.request("status", wait=0.05)["busy"]["dialogs"] == backend.application.dialogs
+
+    backend.application.dialogs = []
+    assert engine.request("job", {"job_id": pending["job_id"]}, wait=5)["ok"] is True
 
 
 def test_unknown_job_and_operation(engine):

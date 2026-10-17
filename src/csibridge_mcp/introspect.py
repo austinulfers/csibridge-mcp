@@ -411,10 +411,13 @@ class ApiIndex:
         return {"matching_enums": sorted(matches)}
 
     def resolve_enum_member(self, text: str) -> int | None:
-        """Map 'eUnits.kN_m_C' (or an unambiguous bare 'kN_m_C') to its value."""
+        """Map 'eUnits.kN_m_C' (or 'eUnits_kN_m_C', or an unambiguous bare 'kN_m_C') to its value."""
         if "." in text:
             enum_name, _, member = text.partition(".")
             return self.enums.get(enum_name, {}).get(member)
+        enum_name, _, member = text.partition("_")  # the type library's own spelling
+        if member in self.enums.get(enum_name, {}):
+            return self.enums[enum_name][member]
         values = {members[text] for members in self.enums.values() if text in members}
         return values.pop() if len(values) == 1 else None
 
