@@ -334,6 +334,8 @@ class MockApplication:
         self.model = _Model()
         # Lets tests exercise long-running-call handling.
         self.analysis_seconds = float(os.environ.get("CSIBRIDGE_MOCK_ANALYSIS_SECONDS", "0"))
+        # Dialog boxes "on screen"; tests set this to stand in for a message box.
+        self.dialogs: list[str] = []
         self.api_object = cOAPI(self)
 
 
@@ -595,6 +597,8 @@ class cDatabaseTables(MockInterface):
         table = self._m.tables().get(TableKey)
         width = len(FieldsKeysIncluded)
         if table is None or table[2] == 0 or not width or len(TableData) != width * NumberRecords:
+            return TableVersion, FieldsKeysIncluded, TableData, 1
+        if table[2] == 2 and self._m.locked:  # CSiBridge refuses these outright while locked
             return TableVersion, FieldsKeysIncluded, TableData, 1
         rows = [list(TableData[i : i + width]) for i in range(0, len(TableData), width)]
         self._m.pending_edits[TableKey] = (list(FieldsKeysIncluded), rows)

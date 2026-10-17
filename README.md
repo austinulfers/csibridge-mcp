@@ -44,15 +44,16 @@ needs no Python, uv, git or admin rights.
 1. Download `csibridge-mcp-portable-win64.zip` from the
    [releases page](https://github.com/austinulfers/csibridge-mcp/releases) (every CI run also
    produces it as a build artifact) and unzip it anywhere, for example in Documents.
-2. Start CSiBridge, then double-click **`Self-test.cmd`**. It attaches to CSiBridge, reads the API's
-   type library, makes a few read-only calls and prints a pass/fail report. It changes nothing in
-   your model.
+2. Start CSiBridge and open a model (any model; the database-table check is skipped without one),
+   then double-click **`Self-test.cmd`**. It attaches to CSiBridge, reads the API's type library,
+   makes a few read-only calls and prints a pass/fail report. It changes nothing in your model.
 3. Connect your client (see below). The server command is the `python\python.exe` inside the folder
    with the arguments `-m csibridge_mcp`; **`Register with Claude Code.cmd`** does this for Claude Code.
 
 ### Option B: from source with uv
 
-Needs [uv](https://docs.astral.sh/uv/) (`winget install astral-sh.uv`).
+Needs [uv](https://docs.astral.sh/uv/) (`winget install astral-sh.uv`). Open a new terminal
+afterwards, and restart your MCP client, so that they find `uv` on the PATH.
 
 ```powershell
 git clone https://github.com/austinulfers/csibridge-mcp.git
@@ -182,6 +183,11 @@ Conventions worth knowing:
 - An operation that outlasts its `wait_seconds` (an analysis, typically) returns
   `{"pending": true, "job_id": ...}` and keeps running; `job_wait` collects the result.
 - Calls run one at a time, in order, because the CSI API is not re-entrant.
+- A few failures make CSiBridge show a message box even when driven through the API (opening a
+  file that does not exist, for one), and the call waits until someone closes it on screen. While
+  that happens, pending results and `status` quote the dialog under `dialogs`, so the assistant can
+  ask you to close it. `open_model` checks that the file exists first for this reason.
+- Enum arguments can be given by name as CSI's documentation writes them, e.g. `"eMatType.Concrete"`.
 - The server sends clients a short set of usage instructions (conventions like the ones above).
   Clients that do not pass server instructions to the model still get the essentials, which are
   repeated in each tool's description.

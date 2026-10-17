@@ -36,6 +36,8 @@ Modeler definitions (layout lines, deck sections, bridge objects) and all analys
 Prefer them for bulk reads.
 - The parametric Bridge Modeler API is under SapModel.BridgeModeler_1 (CSiBridge v25 and later).
 - Long operations such as an analysis may return `pending` with a job_id; keep waiting with `job_wait`.
+- A few failures make CSiBridge open a message box on screen, and the call waits until someone closes \
+it. Pending results and `status` then list it under `dialogs`: tell the user what it says and ask them to close it.
 - File paths are Windows paths on the machine running CSiBridge.
 - Everything happens in the user's live CSiBridge session. Opening or creating a model discards unsaved \
 changes to the current one, so save first, and confirm before replacing or overwriting a model the user \
@@ -46,11 +48,20 @@ READ_ONLY = ToolAnnotations(readOnlyHint=True)
 DESTRUCTIVE = ToolAnnotations(destructiveHint=True)
 TABLES = "SapModel.DatabaseTables."
 PENDING_NOTE = "Still running. Call job_wait with this job_id to keep waiting; other calls queue behind it."
+DIALOG_NOTE = (
+    "CSiBridge is showing a dialog (see dialogs) and cannot continue until someone closes it on screen. "
+    "Tell the user what it says and ask them to close it in CSiBridge, then call job_wait."
+)
 
 
 def _render(result: dict) -> str:
+    notes = [result.get("note")]
     if result.get("pending"):
-        result = {**result, "note": PENDING_NOTE}
+        notes.append(PENDING_NOTE)
+    if result.get("dialogs") or (result.get("busy") or {}).get("dialogs"):
+        notes.append(DIALOG_NOTE)
+    if any(notes[1:]):
+        result = {**result, "note": " ".join(note for note in notes if note)}
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -101,17 +112,19 @@ def create_server(engine: Engine, http: bool = False) -> FastMCP:
     def require_idle() -> None:
         """Multi-step tools must not queue half their steps behind a long job."""
         if (busy := engine.busy()) is not None:
+            dialogs = f" It is waiting on a dialog: {'; '.join(busy['dialogs'])}. {DIALOG_NOTE}" if "dialogs" in busy else ""
             raise ToolError(
                 f"CSiBridge is busy running {busy['label']} ({busy['running_seconds']}s so far). "
-                f"Wait for it with job_wait(job_id='{busy['job_id']}') and try again."
+                f"Wait for it with job_wait(job_id='{busy['job_id']}') and try again.{dialogs}"
             )
 
     async def api(method: str, *args: Any, failure: str | None = None) -> list:
         """Call one API function that must succeed; return its ref outputs."""
         result = await request("call", {"method": method, "args": list(args)})
         if result.get("pending"):
+            dialogs = f" It is waiting on a dialog: {'; '.join(result['dialogs'])}. {DIALOG_NOTE}" if "dialogs" in result else ""
             raise ToolError(
-                f"{method} is still running. Wait for it with job_wait(job_id='{result['job_id']}') and try again."
+                f"{method} is still running. Wait for it with job_wait(job_id='{result['job_id']}') and try again.{dialogs}"
             )
         if not result["ok"]:
             raise ToolError(f"{failure or method + ' failed'} ({result['error']})")
@@ -237,6 +250,9 @@ def create_server(engine: Engine, http: bool = False) -> FastMCP:
         Args:
             path: Full Windows path of the model on the machine running CSiBridge.
         """
+        # CSiBridge answers a missing file with a message box that blocks until closed on screen.
+        if not engine.backend.file_exists(path):
+            raise ToolError(f"There is no file at {path!r} on the machine running CSiBridge. Check the full path.")
         result = await request("call", {"method": "SapModel.File.OpenFile", "args": [path]}, wait=180)
         if result.get("ok") is False:
             result["hint"] = "Check that the path exists on the CSiBridge machine and is a CSiBridge model."
@@ -250,7 +266,12 @@ def create_server(engine: Engine, http: bool = False) -> FastMCP:
             path: Full Windows path (.bdb) to save as. Empty saves to the model's current file,
                 which fails if the model has never been saved.
         """
-        return _render(await request("call", {"method": "SapModel.File.Save", "args": [path]}, wait=180))
+        result = await request("call", {"method": "SapModel.File.Save", "args": [path]}, wait=180)
+        if result.get("ok") is False:
+            result["hint"] = (
+                "Give a full path in a folder that exists. An empty path only works once the model has been saved."
+            )
+        return _render(result)
 
     @mcp.tool(annotations=DESTRUCTIVE)
     async def new_model(units: str = "kN_m_C") -> str:
@@ -419,15 +440,24 @@ def create_server(engine: Engine, http: bool = False) -> FastMCP:
         not_editable = f"Table {table_key!r} cannot be edited. Check its key and import_type with list_tables"
         if table_version is None:
             table_version = (await api(TABLES + "GetTableForEditingArray", table_key, "", failure=not_editable))[0]
-        await api(
-            TABLES + "SetTableForEditingArray",
-            table_key,
-            table_version,
-            fields,
-            len(rows),
-            flat,
-            failure=f"CSiBridge rejected the new contents of {table_key!r}",
-        )
+        try:
+            await api(
+                TABLES + "SetTableForEditingArray",
+                table_key,
+                table_version,
+                fields,
+                len(rows),
+                flat,
+                failure=f"CSiBridge rejected the new contents of {table_key!r}. Check the field keys and values "
+                "against get_table(for_editing=True)",
+            )
+        except ToolError:
+            if (await request("call", {"method": "SapModel.GetModelIsLocked"})).get("ret") is True:
+                raise ToolError(
+                    f"CSiBridge refused to edit {table_key!r} because the model is locked (it has analysis results). "
+                    "Unlocking it with SapModel.SetModelIsLocked(false) deletes the results."
+                ) from None
+            raise
         if not apply:
             return _render({"ok": True, "table": table_key, "rows": len(rows), "applied": False})
 

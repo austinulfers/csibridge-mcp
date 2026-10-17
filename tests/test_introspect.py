@@ -149,7 +149,9 @@ def test_enum_lookup(index):
     assert "eUnits" in index.describe_enum()["enums"]
     assert index.resolve_enum_member("eUnits.kip_ft_F") == 4
     assert index.resolve_enum_member("kip_ft_F") == 4
+    assert index.resolve_enum_member("eUnits_kip_ft_F") == 4  # the type library's own spelling
     assert index.resolve_enum_member("eUnits.nope") is None
+    assert index.resolve_enum_member("eUnits_nope") is None
 
 
 # -- arguments --------------------------------------------------------------

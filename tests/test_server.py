@@ -122,10 +122,21 @@ async def test_analysis_failure_carries_a_hint(client):
     assert result["ok"] is False and "saved to a file" in result["hint"]
 
 
-async def test_open_model(client):
+async def test_open_model(client, backend, monkeypatch):
     assert (await tool(client, "open_model", path=MODEL))["ok"] is True
     failed = await tool(client, "open_model", path=r"C:\models\notes.txt")
     assert failed["ok"] is False and "hint" in failed
+
+    # CSiBridge would block on a message box for a missing file, so it is never asked.
+    monkeypatch.setattr(backend, "file_exists", lambda path: False)
+    with pytest.raises(ToolFailure, match="no file at"):
+        await tool(client, "open_model", path=r"C:\models\gone.bdb")
+
+
+async def test_save_model_failure_carries_a_hint(client):
+    await tool(client, "new_model")
+    failed = await tool(client, "save_model")
+    assert failed["ok"] is False and "folder that exists" in failed["hint"]
 
 
 # -- database tables --------------------------------------------------------
@@ -196,10 +207,12 @@ async def test_edit_table_reports_csibridge_rejections(client):
     await build_two_span_girder(client)
     await tool(client, "run_analysis")  # locks the model
     table = await tool(client, "get_table", table_key="Joint Coordinates", for_editing=True)
-    refused = await tool(client, "edit_table", table_key="Joint Coordinates", fields=table["fields"], rows=table["rows"])
-    assert refused["ok"] is False and refused["fatal_errors"] == 1
-    assert "locked" in refused["import_log"]
+    with pytest.raises(ToolFailure, match="because the model is locked"):
+        await tool(client, "edit_table", table_key="Joint Coordinates", fields=table["fields"], rows=table["rows"])
+    await tool(client, "call", method="SapModel.SetModelIsLocked", args=[False])
 
+    with pytest.raises(ToolFailure, match="Check the field keys and values"):
+        await tool(client, "edit_table", table_key="No Such Table", fields=["Joint"], rows=[["1"]], table_version=1)
     with pytest.raises(ToolFailure, match="cannot be edited"):
         await tool(client, "edit_table", table_key="Joint Displacements", fields=["Joint"], rows=[["1"]])
     with pytest.raises(ToolFailure, match="Row 1 must have exactly 6 values"):
@@ -234,6 +247,21 @@ async def test_long_analysis_returns_pending_then_job_wait_finishes_it(client, b
     finished = await tool(client, "job_wait", job_id=pending["job_id"], wait_seconds=5)
     assert finished["ok"] is True
     assert (await tool(client, "get_table", table_key="Joint Displacements"))["total_rows"] == 3
+
+
+async def test_a_dialog_in_csibridge_is_explained(client, backend):
+    await build_two_span_girder(client)
+    backend.application.analysis_seconds = 0.4
+    backend.application.dialogs = ["CSiBridge: Can not Open File C:\\models\\gone.bdb"]
+
+    pending = await tool(client, "run_analysis", wait_seconds=0.05)
+    assert pending["dialogs"] == backend.application.dialogs and "close it in CSiBridge" in pending["note"]
+    with pytest.raises(ToolFailure, match="waiting on a dialog: CSiBridge: Can not Open File"):
+        await tool(client, "list_tables")
+    assert "close it in CSiBridge" in (await tool(client, "status"))["note"]
+
+    backend.application.dialogs = []
+    assert (await tool(client, "job_wait", job_id=pending["job_id"], wait_seconds=5))["ok"] is True
 
 
 # -- the real transport -----------------------------------------------------
