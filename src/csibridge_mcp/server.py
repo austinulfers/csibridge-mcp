@@ -34,7 +34,15 @@ discards the results.
 - Database tables (`list_tables`, `get_table`, `edit_table`) reach nearly everything, including Bridge \
 Modeler definitions (layout lines, deck sections, bridge objects) and all analysis and design results. \
 Prefer them for bulk reads.
+- Tables that refer to each other, such as the three "Case - Moving Load" tables, must be edited together: \
+stage each with edit_table(apply=false) and apply them with the last call. Applied one at a time, records \
+that point at the others can be dropped.
+- Cable elements have no results table of their own: their axial forces are in "Element Forces - Frames" \
+(and SapModel.Results.FrameForce), under the cable names.
 - The parametric Bridge Modeler API is under SapModel.BridgeModeler_1 (CSiBridge v25 and later).
+- After changing a model built from general objects (points, frames, cables), SapModel.View.RefreshView \
+alone may leave the 3-D view blank. Call SapModel.View.RefreshWindow and then RefreshView(0, false) so the \
+user sees the change.
 - Long operations such as an analysis may return `pending` with a job_id; keep waiting with `job_wait`.
 - A few failures make CSiBridge open a message box on screen, and the call waits until someone closes \
 it. Pending results and `status` then list it under `dialogs`: tell the user what it says and ask them to close it.
@@ -129,6 +137,19 @@ def create_server(engine: Engine, http: bool = False) -> FastMCP:
         if not result["ok"]:
             raise ToolError(f"{failure or method + ' failed'} ({result['error']})")
         return _outputs(result)
+
+    async def nothing_selected_for_display() -> bool:
+        """Whether no load case or combination is selected for display, so result tables cannot be read."""
+        if engine.busy() is not None:
+            return False
+        for getter in ("GetLoadCasesSelectedForDisplay", "GetLoadCombinationsSelectedForDisplay"):
+            try:
+                count, _ = await api(TABLES + getter)
+            except ToolError:
+                return False
+            if count:
+                return False
+        return True
 
     # -- session ----------------------------------------------------------
 
@@ -348,7 +369,9 @@ def create_server(engine: Engine, http: bool = False) -> FastMCP:
     ) -> str:
         """Read a CSiBridge database table as {"fields": [...], "rows": [[...], ...]}.
 
-        Works for model definition tables and, after an analysis, result tables. All values are
+        Works for model definition tables and, after an analysis, result tables. Result tables
+        report only the load cases and combinations selected for display, and a new model may have
+        none selected: pass load_cases (names from SapModel.LoadCases.GetNameList). All values are
         text, in the model's present units.
 
         Args:
@@ -380,9 +403,20 @@ def create_server(engine: Engine, http: bool = False) -> FastMCP:
         if for_editing:
             version, names, _, flat = await api(TABLES + "GetTableForEditingArray", table_key, group, failure=failure)
         else:
-            _, version, names, _, flat = await api(
-                TABLES + "GetTableForDisplayArray", table_key, fields or [], group, failure=failure
-            )
+            try:
+                _, version, names, _, flat = await api(
+                    TABLES + "GetTableForDisplayArray", table_key, fields or [], group, failure=failure
+                )
+            except ToolError:
+                # CSiBridge gives no reason, but the usual one is that nothing is selected for display.
+                if all(chosen is None for chosen in selections.values()) and await nothing_selected_for_display():
+                    raise ToolError(
+                        f"Could not read table {table_key!r}: no load cases or combinations are selected for "
+                        "display, and result tables report only the selected ones. Pass load_cases=[...] "
+                        "(SapModel.LoadCases.GetNameList lists the names) or load_combos=[...]. "
+                        "If it is not a result table, check the key with list_tables."
+                    ) from None
+                raise
         width = len(names)
         rows = [flat[i : i + width] for i in range(0, len(flat), width)] if width else []
         if where:
@@ -424,7 +458,8 @@ def create_server(engine: Engine, http: bool = False) -> FastMCP:
             rows: The records, each a list of values in `fields` order or an object keyed by field.
             table_version: The table_version returned by get_table(for_editing=True). Looked up if omitted.
             apply: Apply the edit to the model now. With false the edit is only staged, to be
-                applied together with other tables by a later edit_table call.
+                applied together with other tables by a later edit_table call. Stage tables that
+                refer to each other (such as the "Case - Moving Load" tables) and apply them together.
         """
         require_idle()
         flat: list[str] = []
