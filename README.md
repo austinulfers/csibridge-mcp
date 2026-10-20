@@ -191,6 +191,10 @@ Conventions worth knowing:
 - The server sends clients a short set of usage instructions (conventions like the ones above).
   Clients that do not pass server instructions to the model still get the essentials, which are
   repeated in each tool's description.
+- The instructions also cover CSiBridge behaviour found while building real models: result tables
+  only report the load cases selected for display (`get_table` says so when none are), tables that
+  refer to each other must be edited together, cable forces are in the frame forces table, and the
+  3-D view of a model built from general objects needs `View.RefreshWindow` to repaint.
 
 ## Developing on macOS or Linux
 
